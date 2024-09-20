@@ -10,14 +10,11 @@
 #include <random>
 #include <chrono>
 
-const int NUM_TABLES = 3;
-const int ROWS_PER_TABLE = 10;
-const char* SHM_NAME = "arrow_shm_ring";
+const char* SHM_NAME = "arrow_shm";
 
-struct RingBufferMetadata {
-    int write_index;
-    int read_index;
-    int64_t table_size_bytes[NUM_TABLES];
+struct Metadata {
+    int num_tables;
+    int64_t table_size_bytes[1];  // Flexible array member
 };
 
 void handle_status(const arrow::Status& status) {
@@ -27,7 +24,7 @@ void handle_status(const arrow::Status& status) {
     }
 }
 
-std::shared_ptr<arrow::Table> create_table(int64_t start_time) {
+std::shared_ptr<arrow::Table> create_table(int num_rows, int64_t start_time) {
     arrow::Int64Builder timestamp_builder;
     arrow::DoubleBuilder price_builder;
     arrow::DoubleBuilder volume_builder;
@@ -37,7 +34,7 @@ std::shared_ptr<arrow::Table> create_table(int64_t start_time) {
     std::uniform_real_distribution<> price_dist(100.0, 200.0);
     std::uniform_real_distribution<> volume_dist(1000.0, 10000.0);
 
-    for (int i = 0; i < ROWS_PER_TABLE; ++i) {
+    for (int i = 0; i < num_rows; ++i) {
         handle_status(timestamp_builder.Append(start_time + i * 1000000)); // Increment by 1ms
         handle_status(price_builder.Append(price_dist(gen)));
         handle_status(volume_builder.Append(volume_dist(gen)));
@@ -59,7 +56,7 @@ std::shared_ptr<arrow::Table> create_table(int64_t start_time) {
     return arrow::Table::Make(schema, {timestamp_array, price_array, volume_array});
 }
 
-void write_table_to_shm(const std::shared_ptr<arrow::Table>& table, char* buffer, int64_t& offset) {
+void write_table_to_buffer(const std::shared_ptr<arrow::Table>& table, char* buffer, int64_t& offset) {
     arrow::Result<std::shared_ptr<arrow::io::BufferOutputStream>> maybe_out_stream = 
         arrow::io::BufferOutputStream::Create(1024 * 1024, arrow::default_memory_pool());
     handle_status(maybe_out_stream.status());
@@ -85,35 +82,44 @@ void write_table_to_shm(const std::shared_ptr<arrow::Table>& table, char* buffer
 int main() {
     using namespace boost::interprocess;
 
+    const int num_tables = 3;
+    const std::vector<int> rows_per_table = {3, 4, 5};  // Variable number of rows
+
+    // Calculate total size needed
+    int64_t metadata_size = sizeof(Metadata) + (num_tables - 1) * sizeof(int64_t);
+    int64_t data_size = num_tables * 1024 * 1024;  // Assume max 1MB per table
+    int64_t total_size = metadata_size + data_size;
+
+    // Create shared memory
     shared_memory_object::remove(SHM_NAME);
     shared_memory_object shm(create_only, SHM_NAME, read_write);
-
-    int64_t total_size = sizeof(RingBufferMetadata) + NUM_TABLES * 1024 * 1024; // Assume max 1MB per table
     shm.truncate(total_size);
-
     mapped_region region(shm, read_write);
     char* mem = static_cast<char*>(region.get_address());
 
-    RingBufferMetadata* metadata = reinterpret_cast<RingBufferMetadata*>(mem);
-    metadata->write_index = 0;
-    metadata->read_index = 0;
+    // Initialize metadata
+    Metadata* metadata = reinterpret_cast<Metadata*>(mem);
+    metadata->num_tables = num_tables;
 
-    char* buffer = mem + sizeof(RingBufferMetadata);
-
+    // Write tables
+    char* data_buffer = mem + metadata_size;
+    int64_t offset = 0;
     int64_t current_time = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::system_clock::now().time_since_epoch()
     ).count();
 
-    for (int i = 0; i < NUM_TABLES; ++i) {
-        auto table = create_table(current_time + i * 1000000000);
-        int64_t offset = i * 1024 * 1024;
-        write_table_to_shm(table, buffer + offset, metadata->table_size_bytes[i]);
-        metadata->write_index = (metadata->write_index + 1) % NUM_TABLES;
-        current_time += 1000000000; // Increment by 1 second for each table
+    for (int i = 0; i < num_tables; ++i) {
+        auto table = create_table(rows_per_table[i], current_time + i * 1000000000);
+        int64_t start_offset = offset;
+        write_table_to_buffer(table, data_buffer, offset);
+        metadata->table_size_bytes[i] = offset - start_offset;
+        std::cout << "Table " << i+1 << " size: " << metadata->table_size_bytes[i] << " bytes" << std::endl;
     }
 
-    std::cout << "Wrote " << NUM_TABLES << " tables to shared memory ring buffer." << std::endl;
-    std::cout << "Each table has " << ROWS_PER_TABLE << " rows." << std::endl;
+    std::cout << "Wrote " << num_tables << " tables to shared memory." << std::endl;
+    for (int i = 0; i < num_tables; ++i) {
+        std::cout << "Table " << i+1 << " has " << rows_per_table[i] << " rows." << std::endl;
+    }
 
     return 0;
 }

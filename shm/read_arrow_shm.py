@@ -6,21 +6,17 @@ import pandas as pd
 import gc
 import ctypes
 
-NUM_TABLES = 3
-ROWS_PER_TABLE = 10
-SHM_NAME = "arrow_shm_ring"
+SHM_NAME = "arrow_shm"
 
-class RingBufferMetadata(ctypes.Structure):
+class Metadata(ctypes.Structure):
     _fields_ = [
-        ("write_index", ctypes.c_int),
-        ("read_index", ctypes.c_int),
-        ("table_size_bytes", ctypes.c_int64 * NUM_TABLES)
+        ("num_tables", ctypes.c_int),
+        ("table_size_bytes", ctypes.c_int64 * 1)  # Flexible array member
     ]
 
-def read_table_from_buffer(buffer, offset, size):
-    reader = pa.ipc.open_stream(buffer[offset:offset+size])
-    table = reader.read_all()
-    return table
+def read_table_from_buffer(buffer):
+    with pa.ipc.open_stream(buffer) as reader:
+        return reader.read_all()
 
 def read_tables_from_shm():
     shm_path = f"/dev/shm/{SHM_NAME}"
@@ -30,15 +26,32 @@ def read_tables_from_shm():
 
     with open(shm_path, "rb") as f:
         with mmap.mmap(f.fileno(), 0, prot=mmap.PROT_READ) as mm:
-            metadata = RingBufferMetadata.from_buffer_copy(mm[:ctypes.sizeof(RingBufferMetadata)])
-            buffer = memoryview(mm[ctypes.sizeof(RingBufferMetadata):])
+            # Read the number of tables
+            num_tables = ctypes.c_int.from_buffer_copy(mm[:ctypes.sizeof(ctypes.c_int)]).value
+
+            # Calculate the full metadata size
+            metadata_size = ctypes.sizeof(Metadata) + (num_tables - 1) * ctypes.sizeof(ctypes.c_int64)
+
+            # Read the full metadata
+            metadata_buffer = mm[:metadata_size]
+            
+            class FullMetadata(ctypes.Structure):
+                _fields_ = [
+                    ("num_tables", ctypes.c_int),
+                    ("table_size_bytes", ctypes.c_int64 * num_tables)
+                ]
+
+            metadata = FullMetadata.from_buffer_copy(metadata_buffer)
 
             tables = []
-            for i in range(NUM_TABLES):
-                offset = i * 1024 * 1024  # Assuming 1MB per table as in C++
+            offset = metadata_size
+            for i in range(num_tables):
                 size = metadata.table_size_bytes[i]
-                table = read_table_from_buffer(buffer, offset, size)
-                tables.append(table)
+                if size > 0:
+                    table_buffer = memoryview(mm[offset:offset+size])
+                    table = read_table_from_buffer(table_buffer)
+                    tables.append(table)
+                    offset += size
 
     return tables
 
@@ -46,16 +59,14 @@ def print_table_info(table):
     print(f"Table shape: {table.num_rows} rows x {table.num_columns} columns")
     print("Schema:")
     print(table.schema)
-    print("\nFirst few rows:")
-    print(table.to_pandas().head())
+    print("\nAll rows:")
+    print(table.to_pandas())
     print("\n" + "="*50 + "\n")
 
 if __name__ == "__main__":
     tables = read_tables_from_shm()
-    print(f"Successfully read {len(tables)} tables from shared memory ring buffer.")
+    print(f"Successfully read {len(tables)} tables from shared memory.")
     
     for i, table in enumerate(tables):
         print(f"Table {i+1}:")
         print_table_info(table)
-        
-
