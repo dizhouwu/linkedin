@@ -65,7 +65,3 @@ TEST(UniquePtrTest, CopyConstructor) {
     // UniquePtr<MyClass> copy(ptr); // This should fail to compile if UniquePtr is non-copyable
 }
 
-int main(int argc, char **argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
