@@ -7,6 +7,8 @@
 #include <atomic>
 #include <iomanip> // For std::put_time
 #include <ctime>   // For std::time_t, std::localtime
+#include <memory>  // For std::unique_ptr
+
 using Clock = std::chrono::steady_clock;
 using TimePoint = Clock::time_point;
 using TimerCallback = std::function<void()>;
@@ -24,7 +26,7 @@ struct OHLCV {
 struct TimerNode {
     TimePoint expirationTime;
     TimerCallback callback;
-    TimerNode* next;
+    std::unique_ptr<TimerNode> next; // Use smart pointer here
 
     TimerNode(TimePoint time, TimerCallback cb) 
         : expirationTime(time), callback(cb), next(nullptr) {}
@@ -37,19 +39,19 @@ public:
 
     void addTimer(int delayMillis, TimerCallback callback) {
         TimePoint expiration = Clock::now() + std::chrono::milliseconds(delayMillis);
-        TimerNode* newNode = new TimerNode(expiration, callback);
+        auto newNode = std::make_unique<TimerNode>(expiration, callback); // Use smart pointer
 
         std::lock_guard<std::mutex> lock(mtx);
         if (!head || expiration < head->expirationTime) {
-            newNode->next = head;
-            head = newNode;
+            newNode->next = std::move(head); // Move head to newNode
+            head = std::move(newNode);
         } else {
-            TimerNode* current = head;
+            TimerNode* current = head.get();
             while (current->next && current->next->expirationTime < expiration) {
-                current = current->next;
+                current = current->next.get();
             }
-            newNode->next = current->next;
-            current->next = newNode;
+            newNode->next = std::move(current->next); // Move next to newNode
+            current->next = std::move(newNode);
         }
     }
 
@@ -59,10 +61,10 @@ public:
             {
                 std::lock_guard<std::mutex> lock(mtx);
                 while (head && head->expirationTime <= now) {
-                    TimerNode* expired = head;
-                    head->callback();  // Execute the callback
-                    head = head->next;
-                    delete expired;
+                    TimerNode* expired = head.release(); // Release the unique_ptr
+                    expired->callback();  // Execute the callback
+                    head = std::move(expired->next); // Move the next node to head
+                    delete expired; // Delete the expired node
                 }
             }
             std::this_thread::yield();
@@ -74,7 +76,7 @@ public:
     }
 
 private:
-    TimerNode* head;
+    std::unique_ptr<TimerNode> head; // Use smart pointer here
     std::mutex mtx;
     bool stop;
 };
@@ -139,7 +141,7 @@ int main() {
     std::thread dataThread([&ohlcvData, &ohlcvMutex, &running]() {
         while (running) {
             mockProcessPacket(ohlcvData, ohlcvMutex);
-            std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Simulate packet arrival rate
+            std::this_thread::sleep_for(std::chrono::milliseconds(10)); // Simulate packet arrival rate
         }
     });
 
