@@ -5,9 +5,9 @@
 #include <mutex>
 #include <random>
 #include <atomic>
-#include <iomanip> // For std::put_time
-#include <ctime>   // For std::time_t, std::localtime
-#include <memory>  // For std::unique_ptr
+#include <iomanip>
+#include <ctime>
+#include <memory>
 
 using Clock = std::chrono::steady_clock;
 using TimePoint = Clock::time_point;
@@ -26,7 +26,7 @@ struct OHLCV {
 struct TimerNode {
     TimePoint expirationTime;
     TimerCallback callback;
-    std::unique_ptr<TimerNode> next; // Use smart pointer here
+    std::unique_ptr<TimerNode> next;
 
     TimerNode(TimePoint time, TimerCallback cb) 
         : expirationTime(time), callback(cb), next(nullptr) {}
@@ -37,20 +37,20 @@ class TimerList {
 public:
     TimerList() : head(nullptr), stop(false) {}
 
-    void addTimer(int delayMillis, TimerCallback callback) {
-        TimePoint expiration = Clock::now() + std::chrono::milliseconds(delayMillis);
-        auto newNode = std::make_unique<TimerNode>(expiration, callback); // Use smart pointer
+    void addTimer(TimePoint start, int intervalMillis, TimerCallback callback) {
+        auto expiration = start + std::chrono::milliseconds(intervalMillis);
+        auto newNode = std::make_unique<TimerNode>(expiration, callback);
 
         std::lock_guard<std::mutex> lock(mtx);
         if (!head || expiration < head->expirationTime) {
-            newNode->next = std::move(head); // Move head to newNode
+            newNode->next = std::move(head);
             head = std::move(newNode);
         } else {
             TimerNode* current = head.get();
             while (current->next && current->next->expirationTime < expiration) {
                 current = current->next.get();
             }
-            newNode->next = std::move(current->next); // Move next to newNode
+            newNode->next = std::move(current->next);
             current->next = std::move(newNode);
         }
     }
@@ -61,10 +61,10 @@ public:
             {
                 std::lock_guard<std::mutex> lock(mtx);
                 while (head && head->expirationTime <= now) {
-                    TimerNode* expired = head.release(); // Release the unique_ptr
-                    expired->callback();  // Execute the callback
-                    head = std::move(expired->next); // Move the next node to head
-                    delete expired; // Delete the expired node
+                    TimerNode* expired = head.release();
+                    expired->callback();
+                    head = std::move(expired->next);
+                    delete expired;
                 }
             }
             std::this_thread::yield();
@@ -76,7 +76,7 @@ public:
     }
 
 private:
-    std::unique_ptr<TimerNode> head; // Use smart pointer here
+    std::unique_ptr<TimerNode> head;
     std::mutex mtx;
     bool stop;
 };
@@ -102,19 +102,16 @@ void mockProcessPacket(OHLCV &ohlcv, std::mutex &ohlcvMutex) {
 // Function to output OHLCV bar
 void outputOHLCV(OHLCV &ohlcv, std::mutex &ohlcvMutex) {
     OHLCV ohlcvCopy;
-
     {
         std::lock_guard<std::mutex> lock(ohlcvMutex);
-        ohlcvCopy = ohlcv; // Copy data to minimize lock time
-        ohlcv = OHLCV(); // Reset OHLCV for the next period
+        ohlcvCopy = ohlcv;
+        ohlcv = OHLCV();
     }
 
-    // Get current time
     auto now = std::chrono::system_clock::now();
     std::time_t now_c = std::chrono::system_clock::to_time_t(now);
     std::tm* now_tm = std::localtime(&now_c);
 
-    // Output the current time and OHLCV data
     std::cout << "[" << std::put_time(now_tm, "%H:%M:%S") << "] "
               << "OHLCV: Open=" << ohlcvCopy.open << ", High=" << ohlcvCopy.high 
               << ", Low=" << ohlcvCopy.low << ", Close=" << ohlcvCopy.close 
@@ -127,12 +124,42 @@ int main() {
     std::mutex ohlcvMutex;
     std::atomic<bool> running(true);
 
-    // Add a 1-second timer 10 times
-    for (int i = 0; i < 10; ++i) {
-        timerList.addTimer(1000 * (i + 1), [&ohlcvData, &ohlcvMutex]() {
+    // Define market start and end times on the current date
+    auto now = std::chrono::system_clock::now();
+    std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+    std::cout << "Now: " << std::put_time(std::localtime(&now_c), "%Y-%m-%d %H:%M:%S") << std::endl;
+
+    std::tm marketOpenTm = *std::localtime(&now_c);
+    marketOpenTm.tm_hour = 22;
+    marketOpenTm.tm_min = 22;
+    marketOpenTm.tm_sec = 0;
+    std::tm marketCloseTm = marketOpenTm;
+    marketCloseTm.tm_hour = 23;
+    marketCloseTm.tm_min = 0;
+
+    auto marketOpen = std::chrono::system_clock::from_time_t(std::mktime(&marketOpenTm));
+    std::time_t marketOpenTime = std::chrono::system_clock::to_time_t(marketOpen);
+    std::cout << "Market open: " << std::put_time(std::localtime(&marketOpenTime), "%Y-%m-%d %H:%M:%S") << std::endl;
+    auto marketClose = std::chrono::system_clock::from_time_t(std::mktime(&marketCloseTm));
+    std::time_t marketCloseTime = std::chrono::system_clock::to_time_t(marketClose);
+    std::cout << "Market close: " << std::put_time(std::localtime(&marketCloseTime), "%Y-%m-%d %H:%M:%S") << std::endl;
+    // Calculate start and end durations from now, converted to steady_clock
+    auto startDuration = std::chrono::duration_cast<std::chrono::milliseconds>(marketOpen - now);
+    auto endDuration = std::chrono::duration_cast<std::chrono::milliseconds>(marketClose - now);
+
+    if (endDuration.count() < 0) {
+        std::cerr << "Market is closed. Program will exit." << std::endl;
+        return 1;
+    }
+
+    // Set timers for each second during market hours
+    int intervalMillis = 1000;
+    for (auto elapsed = startDuration; elapsed < endDuration; elapsed += std::chrono::milliseconds(intervalMillis)) {
+        timerList.addTimer(Clock::now() + elapsed, intervalMillis, [&ohlcvData, &ohlcvMutex]() {
             outputOHLCV(ohlcvData, ohlcvMutex);
         });
     }
+    std::cout << "timer set" << std::endl;
 
     // Start the timer processing thread
     std::thread timerThread(&TimerList::tick, &timerList);
@@ -141,12 +168,12 @@ int main() {
     std::thread dataThread([&ohlcvData, &ohlcvMutex, &running]() {
         while (running) {
             mockProcessPacket(ohlcvData, ohlcvMutex);
-            std::this_thread::sleep_for(std::chrono::milliseconds(10)); // Simulate packet arrival rate
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     });
 
-    // Run the simulation for a limited time (e.g., 10 seconds)
-    std::this_thread::sleep_for(std::chrono::seconds(10));
+    // Run the simulation for the market hours duration
+    std::this_thread::sleep_for(endDuration);
     running = false;
     timerList.stopTicking();
 
