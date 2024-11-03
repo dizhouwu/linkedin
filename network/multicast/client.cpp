@@ -20,8 +20,17 @@ int main() {
 
     // Allow multiple sockets to use the same PORT number
     int reuse = 1;
+
+    // Set SO_REUSEADDR option
     if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-        perror("setsockopt failed");
+        perror("setsockopt SO_REUSEADDR failed");
+        close(sockfd);
+        return -1;
+    }
+
+    // Set SO_REUSEPORT option
+    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse)) < 0) {
+        perror("setsockopt SO_REUSEPORT failed");
         close(sockfd);
         return -1;
     }
