@@ -7,6 +7,7 @@ source_code = """
 x = 4
 y = 5
 z = x * y
+q = x * y
 w = x
 u = w * y
 """
