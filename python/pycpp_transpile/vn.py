@@ -14,15 +14,29 @@ u = w * y
 # Step 1: Parse the source code into an AST
 tree = ast.parse(source_code)
 
-# Step 2: Perform CSE on the AST
-class CSETransformer(ast.NodeTransformer):
+# Step 2: Define the Value Numbering Transformer
+class ValueNumberingTransformer(ast.NodeTransformer):
     def __init__(self):
         self.subexprs = {}
+        self.var_subs = {}  # Track direct variable assignments (e.g., w = x)
         self.new_assignments = []
+        self.value_counter = 0
+
+    def get_value_name(self):
+        # Generate a new unique variable name
+        var_name = f"value_{self.value_counter}"
+        self.value_counter += 1
+        return var_name
 
     def visit_BinOp(self, node):
         # Visit the left and right to get the optimized nodes
         self.generic_visit(node)
+
+        # Substitute variables if there's a direct assignment
+        if isinstance(node.left, ast.Name) and node.left.id in self.var_subs:
+            node.left = ast.Name(id=self.var_subs[node.left.id], ctx=ast.Load())
+        if isinstance(node.right, ast.Name) and node.right.id in self.var_subs:
+            node.right = ast.Name(id=self.var_subs[node.right.id], ctx=ast.Load())
 
         # Create a unique key for the subexpression
         key = (type(node.op), ast.dump(node.left), ast.dump(node.right))
@@ -31,8 +45,8 @@ class CSETransformer(ast.NodeTransformer):
             # If the subexpression has already been seen, replace it with the variable
             return ast.Name(id=self.subexprs[key], ctx=ast.Load())
         else:
-            # If it’s a new subexpression, create a new variable name
-            var_name = f"subexpr_{len(self.subexprs)}"
+            # If it's a new subexpression, create a new variable name
+            var_name = self.get_value_name()
             self.subexprs[key] = var_name
 
             # Create a new assignment for the subexpression
@@ -42,28 +56,44 @@ class CSETransformer(ast.NodeTransformer):
             return ast.Name(id=var_name, ctx=ast.Load())
 
     def visit_Assign(self, node):
+        # If it's a direct assignment (like w = x), store it in var_subs
+        if isinstance(node.value, ast.Name) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name):
+                self.var_subs[target.id] = node.value.id
+
         # Transform the right-hand side of the assignment
         self.generic_visit(node)
         return node
 
-# Create an instance of the transformer and optimize the AST
-transformer = CSETransformer()
+# Step 3: Optimize the AST with Value Numbering
+transformer = ValueNumberingTransformer()
 optimized_tree = transformer.visit(tree)
 
-# Step 3: Collect dependencies
+# Collect original assignments and newly created subexpression assignments
+original_assignments = []
+for node in optimized_tree.body:
+    if isinstance(node, ast.Assign):
+        # Check if the assignment is to a constant
+        if isinstance(node.targets[0], ast.Name) and isinstance(node.value, (ast.Num, ast.Constant)):
+            original_assignments.append(node)
+
+# Collect all new assignments for common subexpressions
+subexpr_assignments = [assign for assign in transformer.new_assignments]
+
+# Step 4: Dependency graph analysis for assignment ordering
 dependencies = defaultdict(set)
 assignment_map = {}
 
-# Track dependencies for each assignment
-for node in optimized_tree.body + transformer.new_assignments:
+# Collect dependencies for each assignment
+for node in optimized_tree.body + subexpr_assignments:
     if isinstance(node, ast.Assign):
         target = node.targets[0].id
-        # Extract variables on the RHS
+        # Find dependencies in the right-hand side (RHS) of the assignment
         used_vars = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)}
         dependencies[target].update(used_vars)
         assignment_map[target] = node
 
-# Step 4: Build the dependency graph and perform a topological sort
 # Calculate in-degrees and construct graph
 in_degree = defaultdict(int)
 graph = defaultdict(list)
