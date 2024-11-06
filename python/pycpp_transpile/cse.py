@@ -3,11 +3,11 @@ import astor
 
 # Original code to be optimized
 source_code = """
-a = 2
-b = 3
-c = a + b
-d = a + b
-e = a * b
+x = 4
+y = 5
+z = x * y 
+w = x
+u = w * y 
 """
 
 # Step 1: Parse the source code into an AST
@@ -49,21 +49,32 @@ class CSETransformer(ast.NodeTransformer):
 transformer = CSETransformer()
 optimized_tree = transformer.visit(tree)
 
-# Step 3: Separate original assignments and new assignments
-original_assignments = []
+# Step 3: Separate assignments based on the required priority
+constant_assignments = []
+direct_var_assignments = []
+subexpr_assignments = transformer.new_assignments
+final_assignments = []
+
 for node in optimized_tree.body:
     if isinstance(node, ast.Assign):
-        # Check if the assignment is to a constant
-        if isinstance(node.targets[0], ast.Name) and isinstance(node.value, (ast.Num, ast.Constant)):
-            original_assignments.append(node)
+        target = node.targets[0]
+        # Assignments to constants
+        if isinstance(node.value, (ast.Num, ast.Constant)):
+            constant_assignments.append(node)
+        # Direct variable-to-variable assignments (e.g., w = x)
+        elif isinstance(node.value, ast.Name) and not node.value.id.startswith("subexpr_"):
+            direct_var_assignments.append(node)
+        # Other assignments that depend on prior calculations
+        else:
+            final_assignments.append(node)
 
-# Collect all new assignments for common subexpressions
-subexpr_assignments = [assign for assign in transformer.new_assignments]
-
-# Step 4: Build the new body with assignments for constants first, then subexpressions
-optimized_tree.body = original_assignments + subexpr_assignments + [
-    n for n in optimized_tree.body if isinstance(n, ast.Assign) and n not in original_assignments
-]
+# Step 4: Build the new body with constants, direct assignments, subexpressions, then final assignments
+optimized_tree.body = (
+    constant_assignments +
+    direct_var_assignments +
+    subexpr_assignments +
+    final_assignments
+)
 
 # Step 5: Compile the optimized AST back to code
 optimized_code = astor.to_source(optimized_tree)
