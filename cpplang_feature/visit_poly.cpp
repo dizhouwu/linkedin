@@ -2,6 +2,7 @@
 #include <variant>
 #include <vector>
 #include <cmath>
+#include <numbers>
 
 // Command types with specific data
 struct Move {
@@ -37,7 +38,7 @@ public:
             },
             [](const Rotate& rotate) { 
                 std::cout << "Processing Rotate Command\n"; 
-                double radians = rotate.angle * M_PI / 180.0;
+                double radians = rotate.angle * std::numbers::pi / 180.0;
                 std::cout << "Calculated radians: " << radians << "\n";
                 rotate.execute(); 
             },
