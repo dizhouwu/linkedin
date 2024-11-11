@@ -1,20 +1,24 @@
 #include <iostream>
+#include <atomic>
 
 template<typename T>
 class SharedPtr {
 public:
     // Constructor
-    explicit SharedPtr(T* ptr = nullptr) : ptr_(ptr), ref_count_(ptr ? new int(1) : nullptr) {}
+    explicit SharedPtr(T* ptr = nullptr) 
+        : ptr_(ptr), ref_count_(ptr ? new std::atomic<int>(1) : nullptr) {}
 
     // Copy constructor
-    SharedPtr(const SharedPtr& other) noexcept : ptr_(other.ptr_), ref_count_(other.ref_count_) {
+    SharedPtr(const SharedPtr& other) noexcept 
+        : ptr_(other.ptr_), ref_count_(other.ref_count_) {
         if (ref_count_) {
-            ++(*ref_count_); // Increment reference count
+            ref_count_->fetch_add(1, std::memory_order_relaxed); // Atomic increment
         }
     }
 
     // Move constructor
-    SharedPtr(SharedPtr&& other) noexcept : ptr_(other.ptr_), ref_count_(other.ref_count_) {
+    SharedPtr(SharedPtr&& other) noexcept 
+        : ptr_(other.ptr_), ref_count_(other.ref_count_) {
         other.ptr_ = nullptr;
         other.ref_count_ = nullptr;
     }
@@ -27,7 +31,7 @@ public:
             ptr_ = other.ptr_;
             ref_count_ = other.ref_count_;
             if (ref_count_) {
-                ++(*ref_count_); // Increment new reference count
+                ref_count_->fetch_add(1, std::memory_order_relaxed); // Atomic increment
             }
         }
         return *this;
@@ -57,16 +61,15 @@ public:
     T* get() const { return ptr_; }
 
     // Check if it's the only owner
-    bool unique() const { return ref_count_ && *ref_count_ == 1; }
+    bool unique() const { return ref_count_ && ref_count_->load(std::memory_order_relaxed) == 1; }
 
     // Get the use count
-    int use_count() const { return ref_count_ ? *ref_count_ : 0; }
-
+    int use_count() const { return ref_count_ ? ref_count_->load(std::memory_order_relaxed) : 0; }
 
     // Helper function to release ownership
     void release() {
         if (ref_count_) {
-            if (--(*ref_count_) == 0) { // Decrement ref count and check if it's zero
+            if (ref_count_->fetch_sub(1, std::memory_order_acq_rel) == 1) { // Atomic decrement
                 delete ptr_;
                 delete ref_count_;
             }
@@ -76,8 +79,6 @@ public:
     }
 
 private:
-    T* ptr_;          // Raw pointer to the managed object
-    int* ref_count_;  // Pointer to the reference count
-
-
+    T* ptr_;                      // Raw pointer to the managed object
+    std::atomic<int>* ref_count_; // Atomic reference count pointer
 };
