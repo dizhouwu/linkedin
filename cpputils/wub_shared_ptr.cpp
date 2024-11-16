@@ -1,5 +1,6 @@
 #include <iostream>
 #include <atomic>
+#include <utility> 
 
 template<typename T>
 class SharedPtr {
@@ -82,3 +83,14 @@ private:
     T* ptr_;                      // Raw pointer to the managed object
     std::atomic<int>* ref_count_; // Atomic reference count pointer
 };
+
+
+
+template<typename T, typename... Args>
+SharedPtr<T> my_make_shared(Args&&... args) {
+    // Use placement new to construct the object
+    T* ptr = new T(std::forward<Args>(args)...);
+
+    // Wrap the raw pointer in SharedPtr and return it
+    return SharedPtr<T>(ptr);
+}
