@@ -86,17 +86,6 @@ private:
 
 
 
-/*************  ✨ Codeium Command ⭐  *************/
-/**
- * my_make_shared is a helper function to create a SharedPtr object.
- * It uses placement new to construct the object and wrap it in a SharedPtr.
- * This function is similar to std::make_shared, but it does not use the atomic
- * reference count optimization.
- *
- * @param args The arguments to the constructor of type T.
- * @return A SharedPtr object that manages the constructed object.
- */
-/******  39c38dc7-06b3-4e60-a7f3-b5201295282d  *******/
 template<typename T, typename... Args>
 SharedPtr<T> my_make_shared(Args&&... args) {
     T* ptr = new T(std::forward<Args>(args)...);
