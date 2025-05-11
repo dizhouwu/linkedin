@@ -42,8 +42,8 @@ class ReactiveNode:
     def mark_dirty(self):
         if not self._is_dirty:
             self._is_dirty = True
-            for dep in self.dependents:
-                dep.mark_dirty()
+        for dep in self.dependents:
+            dep.mark_dirty()
 
     def mark_dependents_dirty(self):
         for dep in self.dependents:
@@ -129,8 +129,7 @@ spot = spot_price(dt)
 fx = fx_rate(dt)
 usd = usd_price(spot, fx)
 
-
-usd.get_value()
+print(usd.get_value())
 
 with fx.override(1.0):
-    usd.get_value()
+    print(usd.get_value())
